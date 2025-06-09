@@ -1,7 +1,3 @@
-You don't often get email from paritoshdagar@gmail.com. Learn why this is important
-CAUTION: This email originated from outside of the organization.
-Do not click links or open attachments unless you recognize the sender and know the content is safe.
-
 #
 # File: a11y_go/config/settings.py
 #
