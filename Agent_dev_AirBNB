@@ -1,0 +1,607 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "c72a2fbe-6916-4e68-9d07-d5ff725c9cd0",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "\n",
+    "# Building Agents to Query Spark Tables\n",
+    "\n",
+    "This notebook is intended to help you start building agents that can interact with Spark tables using Databricks Foundation Models and popular agent-building frameworks like LlamaIndex and LangGraph. The agent will be able to answer questions by executing SQL queries against a specified Spark table."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "da94478e-ee21-4013-85d5-afcc89cd54da",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "## Getting Started—Notes\n",
+    "\n",
+    "- We recommend using `databricks-llama-4-maverick` as the base model for building your agents—it is a fast and highly capable model. If you encounter any compatibility issues, you can try `databricks-meta-llama-3-3-70b-instruct` as an alternative, or configure an [external model](#bring-your-own-model).\n",
+    "- Though Anthropic's Claude models are listed in the Serving menu, they are not currently usable in trial accounts. If you add your credit card information, you can use the Claude models via Databricks. This will still consume your credits and not charge your card directly (though you will be charged if you consume all of your trial credits)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "5663bdb9-4982-4424-b375-e734e05fdef8",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "\n",
+    "## LlamaIndex\n",
+    "\n",
+    "- See the [llamaindex docs](https://docs.llamaindex.ai/en/stable/examples/llm/databricks/) for more details on getting started with LlamaIndex and Databricks"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "2dd069cd-ab52-4cda-a666-279cce387e2a",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "\n",
+    "### Setup: Install Dependencies\n",
+    "\n",
+    "We will install the llamaindex package as well as the `llama-index-llms-databricks` package, which lets us configure and use models from Databricks model serving."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "c2bc6c79-bc49-4a57-9535-40b85d855756",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "%pip install -U llama-index llama-index-llms-databricks mlflow\n",
+    "%restart_python"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "82ec4b99-45e4-4c42-8e78-b66c1d62d832",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# Configure your personal access token\n",
+    "from databricks.sdk import WorkspaceClient\n",
+    "\n",
+    "w = WorkspaceClient()\n",
+    "tmp_token = w.tokens.create(comment=\"for model serving\", lifetime_seconds=3600)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "6fb2baab-dd88-4fbd-b8eb-f05e6fbe69fd",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Set up your Databricks model with LlamaIndex"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "23f5874e-105d-40fe-ad36-978d2904f133",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from llama_index.llms.databricks import Databricks\n",
+    "\n",
+    "llm = Databricks(\n",
+    "    model=\"databricks-llama-4-maverick\",\n",
+    "    api_key=tmp_token.token_value,\n",
+    "    api_base=f\"{w.config.host}/serving-endpoints/\"\n",
+    ")"
+   ]
+  },
+    {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "a3b4c5d6-e7f8-9012-g3h4-i5j6k7l8m9n0",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Define a Tool to Query the Spark Table\n",
+    "Next, we define a Python function that will serve as the tool for our agent. This function takes a Spark SQL query as input, executes it against the specified Airbnb properties table, and returns the result. We dynamically fetch the table's schema and include it in the function's docstring, which is crucial for the agent to understand how to construct valid queries."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "b1c2d3e4-f5g6-7890-h1i2-j3k4l5m6n7o8",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "TABLE_NAME = \"hackathon11_data.bright_initiative.airbnb_properties_information_csv\"\n",
+    "\n",
+    "try:\n",
+    "    # Get the table schema to provide to the LLM. This helps it write accurate queries.\n",
+    "    schema = spark.table(TABLE_NAME).schema\n",
+    "    schema_str = \"\\n\".join([f\"- {field.name}: {field.dataType}\" for field in schema.fields])\n",
+    "except Exception as e:\n",
+    "    print(f\"Warning: Could not read schema for table '{TABLE_NAME}'. Error: {e}\")\n",
+    "    schema_str = \"Schema not available.\"\n",
+    "\n",
+    "def query_spark_table(query: str) -> str:\n",
+    "    f\"\"\"Useful for running a Spark SQL query against the '{TABLE_NAME}' table\n",
+    "    to answer questions about Airbnb properties.\n",
+    "    The query should be a valid Spark SQL query.\n",
+    "    The table has the following schema:\n",
+    "    {schema_str}\n",
+    "\n",
+    "    Args:\n",
+    "        query (str): A valid Spark SQL query.\n",
+    "\n",
+    "    Returns:\n",
+    "        str: A string representation of the query result.\n",
+    "    \"\"\"\n",
+    "    try:\n",
+    "        # Execute the query and convert the result to a string, limiting the output to 100 rows.\n",
+    "        result_df = spark.sql(query).limit(100)\n",
+    "        return result_df.toPandas().to_string()\n",
+    "    except Exception as e:\n",
+    "        return f\"Error executing query: {e}\""
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "1e9362c2-3bdd-4387-ae5d-eefc5aae5637",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Create a LlamaIndex Agent with the Spark Tool\n",
+    "\n",
+    "We can now use the `query_spark_table` function to create a LlamaIndex `ReActAgent`. This agent will be capable of using the tool to answer questions about the Airbnb data."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "4ed98835-ae8e-41f6-8701-65aa8afd5db1",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from llama_index.core.agent.workflow import ReActAgent\n",
+    "from llama_index.core.tools import FunctionTool\n",
+    "import mlflow\n",
+    "\n",
+    "mlflow.llama_index.autolog()\n",
+    "\n",
+    "# Wrap the Python function into a tool that the LlamaIndex agent can use.\n",
+    "spark_sql_tool = FunctionTool.from_defaults(fn=query_spark_table)\n",
+    "\n",
+    "agent = ReActAgent(\n",
+    "    tools=[spark_sql_tool],\n",
+    "    llm=llm,\n",
+    "    system_prompt=\"You are a helpful assistant that can answer questions about Airbnb properties by running Spark SQL queries. Always use the provided tool to query the database. Tell the user the SQL query you ran.\",\n",
+    "    verbose=True\n",
+    ")\n",
+    "\n",
+    "# Ask a question that requires querying the Spark table.\n",
+    "response = await agent.arun(\"How many properties are there for each room type? List the top 5.\")\n",
+    "\n",
+    "print(response)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "01431981-a87e-44fb-88a4-418ee1f3a045",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "## LangGraph\n",
+    "\n",
+    "You can learn more about the Databricks langchain/langgraph integration [here](https://python.langchain.com/docs/integrations/providers/databricks/)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "d7734aad-61f1-4e12-a018-c343846cc753",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Setup: Install Dependencies"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "fab99b87-7d6b-46a5-9eb4-8b2ee778b6b7",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "%pip install -U -qqqq databricks-langchain langgraph langchain langchain_core mlflow \n",
+    "%restart_python"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "cfb6dc9f-6d6f-4c15-a8e5-51f6f101f361",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Set up your Databricks model with LangChain"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "2cce60e2-b4e6-450a-85b4-a80cf66ecb51",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from databricks_langchain import ChatDatabricks\n",
+    "from databricks.sdk import WorkspaceClient\n",
+    "import os\n",
+    "\n",
+    "w = WorkspaceClient()\n",
+    "\n",
+    "os.environ[\"DATABRICKS_HOST\"] = w.config.host\n",
+    "os.environ[\"DATABRICKS_TOKEN\"] = w.tokens.create(comment=\"for model serving\", lifetime_seconds=3600).token_value\n",
+    "\n",
+    "# Note: `databricks-llama-4-maverick` is not compatible with multi-turn tool calling in LangGraph.\n",
+    "# We will use `databricks-meta-llama-3-3-70b-instruct` instead.\n",
+    "llm = ChatDatabricks(endpoint=\"databricks-meta-llama-3-70b-instruct\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "a270f251-dd52-4ab3-a9d0-6a687069bf53",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "### Create a LangGraph Agent with the Spark Tool\n",
+    "\n",
+    "We will now build a LangGraph agent. First, we define the tool using LangChain's `@tool` decorator, again providing the table schema in the docstring to guide the model."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "c85592ce-61ac-4503-9bd1-b9a9e4bb04b5",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from langgraph.prebuilt import create_react_agent\n",
+    "from langchain_core.tools import tool\n",
+    "import mlflow\n",
+    "\n",
+    "mlflow.langchain.autolog()\n",
+    "\n",
+    "TABLE_NAME = \"hackathon11_data.bright_initiative.airbnb_properties_information_csv\"\n",
+    "try:\n",
+    "    schema = spark.table(TABLE_NAME).schema\n",
+    "    schema_str = \"\\n\".join([f\"- {field.name}: {field.dataType}\" for field in schema.fields])\n",
+    "except Exception as e:\n",
+    "    schema_str = f\"Schema not available. Error: {e}\"\n",
+    "\n",
+    "@tool\n",
+    "def query_spark_table(query: str) -> str:\n",
+    "    f\"\"\"Useful for running a Spark SQL query against the '{TABLE_NAME}' table\n",
+    "    to answer questions about Airbnb properties.\n",
+    "    The query should be a valid Spark SQL query.\n",
+    "    The table has the following schema:\n",
+    "    {schema_str}\n",
+    "    \"\"\"\n",
+    "    try:\n",
+    "        result_df = spark.sql(query).limit(100)\n",
+    "        return result_df.toPandas().to_string()\n",
+    "    except Exception as e:\n",
+    "        return f\"Error executing query: {e}\"\n",
+    "\n",
+    "agent = create_react_agent(\n",
+    "    model=llm,  \n",
+    "    tools=[query_spark_table], \n",
+    "    prompt=\"You are a helpful assistant that answers questions by running Spark SQL queries using the provided tool.\"\n",
+    ")\n",
+    "\n",
+    "# Run the agent with a question about the Airbnb data.\n",
+    "response = agent.invoke(\n",
+    "    {\"messages\": [{\"role\": \"user\", \"content\": \"What are the top 5 most expensive properties? Show me their name, price, and neighbourhood.\"}]}\n",
+    ")\n",
+    "print(response)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "6675b83a-78a4-4366-adf8-9f74a9560b91",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "## Bring your own Model\n",
+    "\n",
+    "If you want to use models not available through Databricks model serving, or otherwise want to use your own API keys with external model providers, you can do so in a couple of different ways. This might be a good idea if you are running into any compatiblity issues with various agent-building libraries and integrations. OpenAI models in particular tend to be highly compatible with external tools, and models such as `gpt-4o` and `gpt-4o-mini` are relatively inexpensive and still quite capable.\n",
+    "\n",
+    "1. **Use the model provider's client directly.** This is the same as if you were using the model provider locally. You will need to install the relevant libraries and supply your own API key. e.g.\n",
+    "\n",
+    "```python\n",
+    "from openai import OpenAI\n",
+    "import os\n",
+    "\n",
+    "os.environ[\"OPENAI_API_KEY\"] = <your_api_key>\n",
+    "\n",
+    "client = OpenAI()\n",
+    "\n",
+    "client.chat.completions.create(\n",
+    "    model=\"gpt-4.1\",\n",
+    "    messages=[\n",
+    "        {\n",
+    "            \"role\": \"user\",\n",
+    "            \"content\": \"Hello, World\"\n",
+    "        }\n",
+    "    ]\n",
+    ")\n",
+    "```\n",
+    "\n",
+    "2. **Configure the model as an external model in Databricks model serving**: See [here](https://docs.databricks.com/aws/en/generative-ai/external-models/) for details.\n",
+    "    1. Navigate to the `Serving` tab in the left sidebar and click \"Create Serving Endpoint\"\n",
+    "    2. Name the endpoint whatever you want in the \"Name\" field\n",
+    "    3. Click \"Select an entity\" under \"Entity Details.\" Leave \"Foundation models\" selected.\n",
+    "    4. From the \"Select a foundation model\" dropdown, under \"External model providers,\" select your model provider (e.g. OpenAI)\n",
+    "    5. Fill out the required details, including the API key and provider model and, optionally, any [AI Gateway configurations](https://docs.databricks.com/aws/en/ai-gateway/) you would like.\n",
+    "    6. Query the model in the same way as demonstrated above, using your Databricks workspace token and Databricks model serving integrations"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {},
+     "inputWidgets": {},
+     "nuid": "b9f8be60-9b83-425b-8304-c9ede0e76ffc",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "source": [
+    "\n",
+    "### External Models—quick example\n",
+    "\n",
+    "Suppose you have created a serving endpoint for OpenAI's gpt-4o-mini using the steps detailed above and named it `4omini`. Let's use this with our LangGraph agent to query the Spark table."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 0,
+   "metadata": {
+    "application/vnd.databricks.v1+cell": {
+     "cellMetadata": {
+      "byteLimit": 2048000,
+      "rowLimit": 10000
+     },
+     "inputWidgets": {},
+     "nuid": "b0534d4f-e91e-4257-ad29-99326d536d72",
+     "showTitle": false,
+     "tableResultSettingsMap": {},
+     "title": ""
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from langgraph.prebuilt import create_react_agent\n",
+    "from langchain_core.tools import tool\n",
+    "import os\n",
+    "\n",
+    "w = WorkspaceClient()\n",
+    "\n",
+    "os.environ[\"DATABRICKS_HOST\"] = w.config.host\n",
+    "os.environ[\"DATABRICKS_TOKEN\"] = w.tokens.create(comment=\"for model serving\", lifetime_seconds=1200).token_value\n",
+    "\n",
+    "# Here we use the external model endpoint you created, named '4omini'\n",
+    "llm_external = ChatDatabricks(endpoint=\"4omini\")\n",
+    "\n",
+    "# You can reuse the tool defined in the previous step\n",
+    "agent = create_react_agent(\n",
+    "    model=llm_external,  \n",
+    "    tools=[query_spark_table],  \n",
+    "    prompt=\"You are a helpful assistant that answers questions about Airbnb properties by running Spark SQL queries.\"\n",
+    ")\n",
+    "\n",
+    "# Run the agent\n",
+    "agent.invoke(\n",
+    "    {\"messages\": [{\"role\": \"user\", \"content\": \"What is the average price of properties in the 'Westminster' neighbourhood?\"}]}\n",
+    ")"
+   ]
+  }
+ ],
+ "metadata": {
+  "application/vnd.databricks.v1+notebook": {
+   "computePreferences": null,
+   "dashboards": [],
+   "environmentMetadata": {
+    "base_environment": "",
+    "environment_version": "2"
+   },
+   "inputWidgetPreferences": null,
+   "language": "python",
+   "notebookMetadata": {
+    "pythonIndentUnit": 4
+   },
+   "notebookName": "Agent Frameworks with Spark SQL"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 0
+}
